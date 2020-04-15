@@ -10,5 +10,6 @@ cargo build && cargo run
 ```
 
 TODO:
-- Add a native Token
+
+[ ] Add a real native Token
 
