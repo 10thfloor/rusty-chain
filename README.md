@@ -9,3 +9,6 @@ To run:
 cargo build && cargo run
 ```
 
+TODO:
+- Add a native Token
+
