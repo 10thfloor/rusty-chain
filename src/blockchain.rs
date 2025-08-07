@@ -1,19 +1,21 @@
 use chrono::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use crate::p2p;
 use std::collections::HashMap;
+use tokio::sync::mpsc;
 
 const REWARD: i64 = 420;
 const GENESIS_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
-    sender: String,
-    receiver: String,
-    amount: i64,
+    pub sender: String,
+    pub receiver: String,
+    pub amount: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockHeader {
     timestamp: i64,
     nonce: u32,
@@ -22,7 +24,7 @@ pub struct BlockHeader {
     difficulty: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
     header: BlockHeader,
     count: u32,
@@ -38,6 +40,7 @@ pub struct Chain {
     token_name: String,
     token_symbol: String,
     balances: HashMap<String, i64>,
+    p2p_tx: mpsc::Sender<p2p::P2pMessage>,
 }
 
 impl Chain {
@@ -46,6 +49,7 @@ impl Chain {
         difficulty: u32,
         token_name: String,
         token_symbol: String,
+        p2p_tx: mpsc::Sender<p2p::P2pMessage>,
     ) -> Chain {
         let mut balances = HashMap::new();
         balances.insert(String::from("Root"), 1_000_000_000);
@@ -59,6 +63,7 @@ impl Chain {
             token_name,
             token_symbol,
             balances,
+            p2p_tx,
         };
 
         chain.generate_new_block();
@@ -77,6 +82,10 @@ impl Chain {
         self.balances.get(account)
     }
 
+    pub fn get_chain(&self) -> &Vec<Block> {
+        &self.chain
+    }
+
     pub fn new_transaction(&mut self, sender: String, receiver: String, amount: i64) -> bool {
         if let Some(balance) = self.balances.get(&sender) {
             if *balance < amount {
@@ -86,10 +95,21 @@ impl Chain {
             return false;
         }
 
-        self.current_transaction.push(Transaction {
+        let tx = Transaction {
             sender,
             receiver,
             amount,
+        };
+        self.current_transaction.push(tx.clone());
+        let p2p_tx = self.p2p_tx.clone();
+        tokio::spawn(async move {
+            p2p_tx
+                .send(p2p::P2pMessage {
+                    sender: "0.0.0.0:0".parse().unwrap(), // dummy address
+                    message: p2p::Message::NewTransaction(tx),
+                })
+                .await
+                .unwrap();
         });
         true
     }
@@ -144,6 +164,17 @@ impl Chain {
         }
         println!("{:?}", &block);
         self.process_transactions(&block);
+        let p2p_tx = self.p2p_tx.clone();
+        let new_block = block.clone();
+        tokio::spawn(async move {
+            p2p_tx
+                .send(p2p::P2pMessage {
+                    sender: "0.0.0.0:0".parse().unwrap(), // dummy address
+                    message: p2p::Message::NewBlock(new_block),
+                })
+                .await
+                .unwrap();
+        });
         self.chain.push(block);
         true
     }
@@ -156,6 +187,25 @@ impl Chain {
             let receiver_balance = self.balances.entry(tx.receiver.clone()).or_insert(0);
             *receiver_balance += tx.amount;
         }
+    }
+
+    pub fn resolve_conflict(&mut self, new_chain: &[Block]) -> bool {
+        if new_chain.len() <= self.chain.len() {
+            return false;
+        }
+
+        for (i, block) in new_chain.iter().enumerate() {
+            if i == 0 {
+                continue;
+            }
+            let prev_block = &new_chain[i - 1];
+            if block.header.previous_hash != Chain::hash(&prev_block.header).unwrap() {
+                return false;
+            }
+        }
+
+        self.chain = new_chain.to_vec();
+        true
     }
 
     fn get_merkle(transactions: Vec<Transaction>) -> Result<String, serde_json::Error> {
