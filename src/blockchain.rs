@@ -1,17 +1,15 @@
-extern crate chrono;
-extern crate serde;
-extern crate serde_json;
-extern crate sha2;
-
 use chrono::prelude::*;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::fmt::Write;
+
+const REWARD: i64 = 420;
+const GENESIS_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Transaction {
     sender: String,
     receiver: String,
-    amount: f32,
+    amount: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,7 +33,7 @@ pub struct Chain {
     current_transaction: Vec<Transaction>,
     difficulty: u32,
     miner_address: String,
-    reward: f32,
+    reward: i64,
 }
 
 impl Chain {
@@ -45,39 +43,37 @@ impl Chain {
             current_transaction: Vec::new(),
             difficulty,
             miner_address,
-            reward: 420.0,
+            reward: REWARD,
         };
 
         chain.generate_new_block();
-        return chain;
+        chain
     }
 
-    pub fn new_transaction(&mut self, sender: String, receiver: String, amount: f32) -> bool {
+    pub fn new_transaction(&mut self, sender: String, receiver: String, amount: i64) -> bool {
         self.current_transaction.push(Transaction {
             sender,
             receiver,
             amount,
         });
-
-        return true;
+        true
     }
 
     pub fn last_hash(&self) -> String {
-        let block = match self.chain.last() {
-            Some(block) => block,
-            None => return String::from_utf8(vec![48, 64]).unwrap(),
-        };
-        Chain::hash(&block.header)
+        self.chain
+            .last()
+            .map(|block| Chain::hash(&block.header).expect("Failed to hash block header"))
+            .unwrap_or_else(|| GENESIS_HASH.to_string())
     }
 
     pub fn update_difficulty(&mut self, difficulty: u32) -> bool {
         self.difficulty = difficulty;
-        return true;
+        true
     }
 
-    pub fn update_reward(&mut self, reward: f32) -> bool {
+    pub fn update_reward(&mut self, reward: i64) -> bool {
         self.reward = reward;
-        return true;
+        true
     }
 
     pub fn generate_new_block(&mut self) -> bool {
@@ -104,72 +100,61 @@ impl Chain {
         block.transactions.push(reward_transaction);
         block.transactions.append(&mut self.current_transaction);
         block.count = block.transactions.len() as u32;
-        block.header.merkle = Chain::get_merkle(block.transactions.clone());
+        block.header.merkle =
+            Chain::get_merkle(block.transactions.clone()).expect("Failed to calculate Merkle root");
         Chain::proof_of_work(&mut block.header);
         println!("{:?}", &block);
         self.chain.push(block);
-        return true;
+        true
     }
 
-    fn get_merkle(current_transaction: Vec<Transaction>) -> String {
+    fn get_merkle(transactions: Vec<Transaction>) -> Result<String, serde_json::Error> {
         let mut merkle = Vec::new();
-
-        for t in &current_transaction {
-            let hash = Chain::hash(t);
+        for t in &transactions {
+            let hash = Chain::hash(t)?;
             merkle.push(hash);
         }
 
+        if merkle.is_empty() {
+            return Ok(String::new());
+        }
         if merkle.len() % 2 == 1 {
             let last = merkle.last().cloned().unwrap();
-            merkle.push(last)
+            merkle.push(last);
         }
 
-        if merkle.len() > 1 {
-            let mut h1 = merkle.remove(0);
-            let mut h2 = merkle.remove(0);
-            h1.push_str(&mut h2);
-            let new_hash = Chain::hash(&h1);
-            merkle.push(new_hash);
+        while merkle.len() > 1 {
+            let mut next_level = Vec::new();
+            for chunk in merkle.chunks(2) {
+                let h1 = chunk[0].clone();
+                let h2 = chunk.get(1).cloned().unwrap_or_else(|| h1.clone());
+                let combined = format!("{}{}", h1, h2);
+                let new_hash = Chain::hash(&combined)?;
+                next_level.push(new_hash);
+            }
+            merkle = next_level;
         }
 
-        merkle.pop().unwrap()
+        Ok(merkle.pop().unwrap())
     }
 
     pub fn proof_of_work(header: &mut BlockHeader) {
+        let prefix = "0".repeat(header.difficulty as usize);
         loop {
-            let hash = Chain::hash(header);
-            let slice = &hash[..header.difficulty as usize];
-            match slice.parse::<u32>() {
-                Ok(val) => {
-                    if val != 0 {
-                        header.nonce += 1;
-                    } else {
-                        println!("Block hash: {}", hash);
-                        break;
-                    }
-                }
-                Err(_) => {
-                    header.nonce += 1;
-                    continue;
-                }
+            let hash = Chain::hash(header).expect("Failed to hash header");
+            if hash.starts_with(&prefix) {
+                println!("Block hash: {}", hash);
+                break;
             }
+            header.nonce += 1;
         }
     }
 
-    pub fn hash<T: serde::Serialize>(item: &T) -> String {
-        let input = serde_json::to_string(&item).unwrap();
-        let mut hasher = Sha256::default();
-        hasher.input(input.as_bytes());
-        let res = hasher.result();
-        let vector_from_hash = res.to_vec();
-        Chain::hex_to_string(vector_from_hash.as_slice())
-    }
-
-    pub fn hex_to_string(vector_from_hash: &[u8]) -> String {
-        let mut hex_string = String::new();
-        for b in vector_from_hash {
-            write!(&mut hex_string, "{:x}", b).expect("Unable to write bytes to string.");
-        }
-        return hex_string;
+    pub fn hash<T: serde::Serialize>(item: &T) -> Result<String, serde_json::Error> {
+        let input = serde_json::to_string(item)?;
+        let mut hasher = Sha256::new();
+        hasher.update(input.as_bytes());
+        let res = hasher.finalize();
+        Ok(hex::encode(res))
     }
 }
