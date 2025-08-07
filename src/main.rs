@@ -1,12 +1,38 @@
-use std::io::{self, Write};
-use tokio::io::AsyncBufReadExt;
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use log::LevelFilter;
+use std::{
+    error::Error,
+    io::{self, Write},
+};
 use tokio::sync::mpsc;
+use tui::{
+    backend::{Backend, CrosstermBackend},
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Style},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
+    Terminal,
+};
 
 mod blockchain;
 mod p2p;
 
+struct App {
+    input: String,
+    messages: Vec<String>,
+    chain: blockchain::Chain,
+    p2p: p2p::P2p,
+}
+
 #[tokio::main]
-async fn main() -> io::Result<()> {
+async fn main() -> Result<(), Box<dyn Error>> {
+    env_logger::Builder::new()
+        .filter_level(LevelFilter::Info)
+        .init();
+
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
         eprintln!("Usage: {} <port>", args[0]);
@@ -14,139 +40,103 @@ async fn main() -> io::Result<()> {
     }
     let port = args[1].parse::<u16>().unwrap();
 
-    let (tx, mut rx) = mpsc::channel(100);
-    let p2p_tx = tx.clone();
+    // setup terminal
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
 
-    let mut p2p = p2p::P2p::new(port, vec![]).await.unwrap();
-    let p2p_handle = tokio::spawn(async move {
-        p2p.run(p2p_tx).await;
-    });
+    let (p2p_tx, mut p2p_rx) = mpsc::channel(100);
+    let p2p = p2p::P2p::new(port, vec![]).await?;
 
-    let mut miner_addr = String::new();
-    let mut difficulty_str = String::new();
-
-    // Get miner address
-    print!("Input a miner address: ");
-    io::stdout().flush()?;
-    io::stdin().read_line(&mut miner_addr)?;
-
-    // Get difficulty
-    let difficulty = loop {
-        print!("Difficulty: ");
-        io::stdout().flush()?;
-        io::stdin().read_line(&mut difficulty_str)?;
-        match difficulty_str.trim().parse::<u32>() {
-            Ok(d) => break d,
-            Err(_) => {
-                println!("Invalid input, please enter an integer.");
-                difficulty_str.clear();
-                continue;
-            }
-        }
+    let mut app = App {
+        input: String::new(),
+        messages: Vec::new(),
+        chain: blockchain::Chain::new(
+            "miner_address".to_string(), // Dummy address
+            1,                          // Dummy difficulty
+            "TestCoin".to_string(),
+            "TSC".to_string(),
+            p2p_tx.clone(),
+        ),
+        p2p,
     };
 
-    // Get token name
-    let mut token_name = String::new();
-    print!("Enter token name: ");
-    io::stdout().flush()?;
-    io::stdin().read_line(&mut token_name)?;
+    let res = run_app(&mut terminal, &mut app, &mut p2p_rx).await;
 
-    // Get token symbol
-    let mut token_symbol = String::new();
-    print!("Enter token symbol: ");
-    io::stdout().flush()?;
-    io::stdin().read_line(&mut token_symbol)?;
+    // restore terminal
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
 
-    // The chain
-    let mut chain = blockchain::Chain::new(
-        miner_addr.trim().to_string(),
-        difficulty,
-        token_name.trim().to_string(),
-        token_symbol.trim().to_string(),
-        tx.clone(),
-    );
+    if let Err(err) = res {
+        println!("{:?}", err)
+    }
 
+    Ok(())
+}
+
+async fn run_app<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    p2p_rx: &mut mpsc::Receiver<p2p::P2pMessage>,
+) -> Result<(), Box<dyn Error>> {
     loop {
-        println!("\n -- Menu -- ");
-        println!("(1) New Transaction");
-        println!("(2) Mine block");
-        println!("(3) Create account");
-        println!("(4) Check balance");
-        println!("(5) Change difficulty");
-        println!("(6) Change reward");
-        println!("(0) Exit");
-        print!("Enter your choice ~> ");
-        io::stdout().flush()?;
+        terminal.draw(|f| {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                .split(f.size());
 
-        let mut choice = String::new();
+            let input = Paragraph::new(app.input.as_ref())
+                .style(Style::default().fg(Color::Yellow))
+                .block(Block::default().borders(Borders::ALL).title("Input"));
+            f.render_widget(input, chunks[0]);
+
+            let messages: Vec<ListItem> = app
+                .messages
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let content = format!("{}: {}", i, m);
+                    ListItem::new(content)
+                })
+                .collect();
+            let messages =
+                List::new(messages).block(Block::default().borders(Borders::ALL).title("Messages"));
+            f.render_widget(messages, chunks[1]);
+        })?;
+
         tokio::select! {
-            _ = async {
-                let mut stdin = tokio::io::BufReader::new(tokio::io::stdin());
-                stdin.read_line(&mut choice).await.unwrap();
-            } => {
-                match choice.trim().parse().unwrap_or(99) {
-                    0 => {
-                        println!("Goodbye.");
-                        break;
-                    }
-                    1 => {
-                        if handle_new_transaction(&mut chain)? {
-                            println!("Transaction was added!");
-                        } else {
-                            println!("Transaction failed :(");
+            key_event = tokio::task::spawn_blocking(event::read) => {
+                if let Ok(Event::Key(key)) = key_event? {
+                    match key.code {
+                        KeyCode::Char('q') => {
+                            return Ok(());
                         }
-                    }
-                    2 => {
-                        println!("Generating block ...");
-                        if chain.generate_new_block() {
-                            println!("Block was generated.");
-                        } else {
-                            println!("Block generation failed :(");
+                        KeyCode::Char(c) => {
+                            app.input.push(c);
                         }
-                    }
-                    3 => {
-                        if handle_create_account(&mut chain)? {
-                            println!("Account was created!");
-                        } else {
-                            println!("Account creation failed :(");
+                        KeyCode::Backspace => {
+                            app.input.pop();
                         }
+                        KeyCode::Enter => {
+                            app.messages.push(app.input.drain(..).collect());
+                        }
+                        _ => {}
                     }
-                    4 => {
-                        handle_check_balance(&chain)?;
-                    }
-                    5 => println!("Not implemented."),
-                    6 => println!("Not implemented."),
-                    _ => println!("Invalid input."),
                 }
             }
-            Some(message) = rx.recv() => {
-                match message.message {
-                    p2p::Message::NewBlock(block) => {
-                        if chain.resolve_conflict(&[block]) {
-                            println!("New block received and chain updated.");
-                        }
-                    }
-                    p2p::Message::NewTransaction(tx) => {
-                        chain.new_transaction(tx.sender, tx.receiver, tx.amount);
-                        println!("New transaction received.");
-                    }
-                    p2p::Message::GetBlocks(addr) => {
-                        // This is a simplified implementation. A real implementation would
-                        // send the blocks to the requesting peer.
-                        println!("Received GetBlocks request from {}", addr);
-                    }
-                    p2p::Message::Blocks(blocks) => {
-                        if chain.resolve_conflict(&blocks) {
-                            println!("Blocks received and chain updated.");
-                        }
-                    }
-                }
+            Some(p2p_message) = p2p_rx.recv() => {
+                app.messages.push(format!("{:?}", p2p_message));
             }
         }
     }
-
-    p2p_handle.await?;
-    Ok(())
 }
 
 fn handle_new_transaction(chain: &mut blockchain::Chain) -> io::Result<bool> {

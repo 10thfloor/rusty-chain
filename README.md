@@ -37,6 +37,22 @@ This project is a simplified blockchain implementation in Rust, created for educ
     Enter your choice ~>
     ```
 
+### Running the P2P Network
+
+To run the application as a node in a P2P network, you need to specify a port for it to listen on. You can also provide a list of peer addresses to connect to.
+
+**Terminal 1:**
+```bash
+cargo run 8080
+```
+
+**Terminal 2:**
+```bash
+cargo run 8081 127.0.0.1:8080
+```
+
+This will start two nodes, with the second node connecting to the first. You can then create a transaction on one node and see it propagate to the other.
+
 ## Learning Concepts
 
 This project is a great way to learn about the following blockchain concepts:

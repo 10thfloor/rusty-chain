@@ -1,3 +1,4 @@
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -51,24 +52,27 @@ impl P2p {
     }
 
     pub async fn run(&mut self, tx: mpsc::Sender<P2pMessage>) {
+        info!("P2P network running.");
         loop {
             let (mut stream, addr) = self.listener.accept().await.unwrap();
-            println!("New connection from {}", addr);
+            info!("New connection from {}", addr);
             let tx = tx.clone();
             tokio::spawn(async move {
                 let mut buffer = vec![0; 1024];
                 loop {
                     match stream.read(&mut buffer).await {
                         Ok(0) => {
-                            println!("Connection with {} closed.", addr);
+                            info!("Connection with {} closed.", addr);
                             break;
                         }
                         Ok(n) => {
                             if let Ok(message) = serde_json::from_slice::<P2pMessage>(&buffer[..n]) {
+                                info!("Received message: {:?}", message);
                                 tx.send(message).await.unwrap();
                             }
                         }
-                        Err(_) => {
+                        Err(e) => {
+                            warn!("Failed to read from stream: {}", e);
                             break;
                         }
                     }
@@ -78,6 +82,7 @@ impl P2p {
     }
 
     pub async fn broadcast_message(&mut self, message: P2pMessage) -> Result<(), Box<dyn Error>> {
+        info!("Broadcasting message: {:?}", message);
         let message_bytes = serde_json::to_vec(&message)?;
         for peer in self.peers.values_mut() {
             peer.stream.write_all(&message_bytes).await?;
