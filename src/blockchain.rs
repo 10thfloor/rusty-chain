@@ -1,6 +1,7 @@
 use chrono::prelude::*;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 const REWARD: i64 = 420;
 const GENESIS_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -36,6 +37,7 @@ pub struct Chain {
     reward: i64,
     token_name: String,
     token_symbol: String,
+    balances: HashMap<String, i64>,
 }
 
 impl Chain {
@@ -45,21 +47,45 @@ impl Chain {
         token_name: String,
         token_symbol: String,
     ) -> Chain {
+        let mut balances = HashMap::new();
+        balances.insert(String::from("Root"), 1_000_000_000);
+
         let mut chain = Chain {
             chain: Vec::new(),
             current_transaction: Vec::new(),
             difficulty,
-            miner_address,
+            miner_address: miner_address.clone(),
             reward: REWARD,
             token_name,
             token_symbol,
+            balances,
         };
 
         chain.generate_new_block();
         chain
     }
 
+    pub fn create_account(&mut self, account: String) -> bool {
+        if self.balances.contains_key(&account) {
+            return false;
+        }
+        self.balances.insert(account, 0);
+        true
+    }
+
+    pub fn get_balance(&self, account: &String) -> Option<&i64> {
+        self.balances.get(account)
+    }
+
     pub fn new_transaction(&mut self, sender: String, receiver: String, amount: i64) -> bool {
+        if let Some(balance) = self.balances.get(&sender) {
+            if *balance < amount {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
         self.current_transaction.push(Transaction {
             sender,
             receiver,
@@ -117,8 +143,19 @@ impl Chain {
             println!("Token Symbol: {}", self.token_symbol);
         }
         println!("{:?}", &block);
+        self.process_transactions(&block);
         self.chain.push(block);
         true
+    }
+
+    fn process_transactions(&mut self, block: &Block) {
+        for tx in &block.transactions {
+            if let Some(balance) = self.balances.get_mut(&tx.sender) {
+                *balance -= tx.amount;
+            }
+            let receiver_balance = self.balances.entry(tx.receiver.clone()).or_insert(0);
+            *receiver_balance += tx.amount;
+        }
     }
 
     fn get_merkle(transactions: Vec<Transaction>) -> Result<String, serde_json::Error> {
