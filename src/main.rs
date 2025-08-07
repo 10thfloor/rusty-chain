@@ -50,8 +50,10 @@ fn main() -> io::Result<()> {
         println!("\n -- Menu -- ");
         println!("(1) New Transaction");
         println!("(2) Mine block");
-        println!("(3) Change difficulty");
-        println!("(4) Change reward");
+        println!("(3) Create account");
+        println!("(4) Check balance");
+        println!("(5) Change difficulty");
+        println!("(6) Change reward");
         println!("(0) Exit");
         print!("Enter your choice ~> ");
         io::stdout().flush()?;
@@ -79,8 +81,18 @@ fn main() -> io::Result<()> {
                     println!("Block generation failed :(");
                 }
             }
-            3 => println!("Not implemented."),
-            4 => println!("Not implemented."),
+            3 => {
+                if handle_create_account(&mut chain)? {
+                    println!("Account was created!");
+                } else {
+                    println!("Account creation failed :(");
+                }
+            }
+            4 => {
+                handle_check_balance(&chain)?;
+            }
+            5 => println!("Not implemented."),
+            6 => println!("Not implemented."),
             _ => println!("Invalid input."),
         }
     }
@@ -120,4 +132,24 @@ fn handle_new_transaction(chain: &mut blockchain::Chain) -> io::Result<bool> {
         receiver.trim().to_string(),
         amount,
     ))
+}
+
+fn handle_create_account(chain: &mut blockchain::Chain) -> io::Result<bool> {
+    let mut account = String::new();
+    print!("Enter account name: ");
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut account)?;
+    Ok(chain.create_account(account.trim().to_string()))
+}
+
+fn handle_check_balance(chain: &blockchain::Chain) -> io::Result<()> {
+    let mut account = String::new();
+    print!("Enter account name: ");
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut account)?;
+    match chain.get_balance(&account.trim().to_string()) {
+        Some(balance) => println!("Balance: {}", balance),
+        None => println!("Account not found."),
+    }
+    Ok(())
 }
