@@ -1,4 +1,5 @@
 use chrono::prelude::*;
+use log::info;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use crate::p2p;
@@ -89,9 +90,11 @@ impl Chain {
     pub fn new_transaction(&mut self, sender: String, receiver: String, amount: i64) -> bool {
         if let Some(balance) = self.balances.get(&sender) {
             if *balance < amount {
+                info!("Transaction failed: insufficient funds.");
                 return false;
             }
         } else {
+            info!("Transaction failed: sender not found.");
             return false;
         }
 
@@ -100,6 +103,7 @@ impl Chain {
             receiver,
             amount,
         };
+        info!("New transaction created: {:?}", tx);
         self.current_transaction.push(tx.clone());
         let p2p_tx = self.p2p_tx.clone();
         tokio::spawn(async move {
@@ -158,11 +162,11 @@ impl Chain {
         block.header.merkle =
             Chain::get_merkle(block.transactions.clone()).expect("Failed to calculate Merkle root");
         Chain::proof_of_work(&mut block.header);
+        info!("New block mined: {:?}", block);
         if self.chain.is_empty() {
-            println!("Token Name: {}", self.token_name);
-            println!("Token Symbol: {}", self.token_symbol);
+            info!("Token Name: {}", self.token_name);
+            info!("Token Symbol: {}", self.token_symbol);
         }
-        println!("{:?}", &block);
         self.process_transactions(&block);
         let p2p_tx = self.p2p_tx.clone();
         let new_block = block.clone();
