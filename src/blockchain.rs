@@ -34,16 +34,25 @@ pub struct Chain {
     difficulty: u32,
     miner_address: String,
     reward: i64,
+    token_name: String,
+    token_symbol: String,
 }
 
 impl Chain {
-    pub fn new(miner_address: String, difficulty: u32) -> Chain {
+    pub fn new(
+        miner_address: String,
+        difficulty: u32,
+        token_name: String,
+        token_symbol: String,
+    ) -> Chain {
         let mut chain = Chain {
             chain: Vec::new(),
             current_transaction: Vec::new(),
             difficulty,
             miner_address,
             reward: REWARD,
+            token_name,
+            token_symbol,
         };
 
         chain.generate_new_block();
@@ -103,6 +112,10 @@ impl Chain {
         block.header.merkle =
             Chain::get_merkle(block.transactions.clone()).expect("Failed to calculate Merkle root");
         Chain::proof_of_work(&mut block.header);
+        if self.chain.is_empty() {
+            println!("Token Name: {}", self.token_name);
+            println!("Token Symbol: {}", self.token_symbol);
+        }
         println!("{:?}", &block);
         self.chain.push(block);
         true
