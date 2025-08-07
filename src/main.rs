@@ -26,8 +26,25 @@ fn main() -> io::Result<()> {
         }
     };
 
+    // Get token name
+    let mut token_name = String::new();
+    print!("Enter token name: ");
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut token_name)?;
+
+    // Get token symbol
+    let mut token_symbol = String::new();
+    print!("Enter token symbol: ");
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut token_symbol)?;
+
     // The chain
-    let mut chain = blockchain::Chain::new(miner_addr.trim().to_string(), difficulty);
+    let mut chain = blockchain::Chain::new(
+        miner_addr.trim().to_string(),
+        difficulty,
+        token_name.trim().to_string(),
+        token_symbol.trim().to_string(),
+    );
 
     loop {
         println!("\n -- Menu -- ");
